@@ -24,6 +24,12 @@ use sync15::{
 // I'm completely punting on good error handling here.
 use anyhow::Result;
 
+#[derive(PartialEq)]
+enum ShowLoginFields {
+    Basic,
+    All,
+}
+
 fn read_login() -> LoginEntry {
     let login = loop {
         match prompt_char("Choose login kind: [F]orm based, [A]uth based").unwrap() {
@@ -203,35 +209,51 @@ fn show_sql(conn: &rusqlite::Connection, sql: &str) -> Result<()> {
     Ok(())
 }
 
-fn show_all(store: &LoginStore) -> Result<Vec<String>> {
+fn show_logins(store: &LoginStore, show_which_fields: ShowLoginFields) -> Result<Vec<String>> {
     let logins = store.list()?;
 
     let mut table = prettytable::Table::new();
+    let mut row = row![bc =>
+    "(idx)",
+    "Guid",
+    "Username",
+    "Password",
+    "Origin",
+    ];
 
-    table.add_row(row![bc =>
-        "(idx)",
-        "Guid",
-        "Username",
-        "Password",
-        "Origin",
+    if ShowLoginFields::All == show_which_fields {
+        let extra_fields = vec![
+            "Action Origin",
+            "HTTP Realm",
+            "User Field",
+            "Pass Field",
+            "Uses",
+            "Created At",
+            "Changed At",
+            "Last Used",
+        ];
 
-        "Action Origin",
-        "HTTP Realm",
+        for field in extra_fields {
+            let cell = Cell::new(field);
+            row.add_cell(cell.style_spec("bc"));
+        }
+    }
 
-        "User Field",
-        "Pass Field",
-
-        "Uses",
-        "Created At",
-        "Changed At",
-        "Last Used"
-    ]);
+    table.add_row(row);
 
     let mut v = Vec::with_capacity(logins.len());
     let mut logins_copy = logins.clone();
     logins_copy.sort_by_key(|a| a.guid());
     for login in logins.iter() {
-        table.add_row(row![
+        let row = match show_which_fields {
+            ShowLoginFields::Basic => row![
+            r->v.len(),
+            Fr->&login.guid(),
+            &login.username,
+            &login.password,
+            &login.origin],
+
+            ShowLoginFields::All => row![
             r->v.len(),
             Fr->&login.guid(),
             &login.username,
@@ -252,7 +274,9 @@ fn show_all(store: &LoginStore) -> Result<Vec<String>> {
             } else {
                 timestamp_to_string(login.time_last_used)
             }
-        ]);
+            ],
+        };
+        table.add_row(row);
         v.push(login.guid().to_string());
     }
     table.printstd();
@@ -260,7 +284,7 @@ fn show_all(store: &LoginStore) -> Result<Vec<String>> {
 }
 
 fn prompt_record_id(s: &LoginStore, action: &str) -> Result<Option<String>> {
-    let index_to_id = show_all(s)?;
+    let index_to_id = show_logins(s, ShowLoginFields::Basic)?;
     let input = if let Some(input) = prompt_usize(format!("Enter (idx) of record to {}", action)) {
         input
     } else {
@@ -388,12 +412,12 @@ fn main() -> Result<()> {
 
     log::info!("Store has {} passwords", store.list()?.len());
 
-    if let Err(e) = show_all(&store) {
+    if let Err(e) = show_logins(&store, ShowLoginFields::Basic) {
         log::warn!("Failed to show initial login data! {}", e);
     }
 
     loop {
-        match prompt_char("[A]dd, [D]elete, [U]pdate, [S]ync, [V]iew, [B]ase-domain search, [R]eset, [W]ipe, [T]ouch, E[x]ecute SQL Query, or [Q]uit").unwrap_or('?') {
+        match prompt_char("[A]dd, [D]elete, [U]pdate, [S]ync, [V]iew, View All [F]elds, [B]ase-domain search, [R]eset, [W]ipe, [T]ouch, E[x]ecute SQL Query, or [Q]uit").unwrap_or('?') {
             'A' | 'a' => {
                 log::info!("Adding new record");
                 let record = read_login();
@@ -414,7 +438,7 @@ fn main() -> Result<()> {
                     }
                     _ => {}
                 }
-            }
+        }
             'U' | 'u' => {
                 log::info!("Updating record fields");
                 match prompt_record_id(&store, "update") {
@@ -472,7 +496,12 @@ fn main() -> Result<()> {
                 }
             }
             'V' | 'v' => {
-                if let Err(e) = show_all(&store) {
+                if let Err(e) = show_logins(&store, ShowLoginFields::Basic) {
+                    log::warn!("Failed to dump passwords? This is probably bad! {}", e);
+                }
+            }
+            'F' | 'f' => {
+                if let Err(e) = show_logins(&store, ShowLoginFields::All) {
                     log::warn!("Failed to dump passwords? This is probably bad! {}", e);
                 }
             }
