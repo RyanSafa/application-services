@@ -398,9 +398,21 @@ fn main() -> Result<()> {
         )
         .get_matches();
 
-    let cred_file = matches.get_one::<String>("credential_file").unwrap();
-    let db_path = matches.get_one::<String>("database_path").unwrap();
     let profile_path = matches.get_one::<String>("profile_path").unwrap();
+    let cred_file;
+    let db_path;
+
+    if matches.value_source("profile_path").is_some() {
+        let base = std::path::Path::new(profile_path);
+        db_path = base.join("key4.db").display().to_string();
+        cred_file = base.join("credentials.json").display().to_string();
+    } else {
+        cred_file = matches
+            .get_one::<String>("credential_file")
+            .unwrap()
+            .clone();
+        db_path = matches.get_one::<String>("database_path").unwrap().clone();
+    }
 
     log::debug!("credential file: {:?}", cred_file);
     log::debug!("db: {:?}", db_path);
@@ -408,7 +420,7 @@ fn main() -> Result<()> {
 
     init_rust_components::initialize(profile_path.to_string());
 
-    let store = Arc::new(open_database(db_path)?);
+    let store = Arc::new(open_database(&db_path)?);
 
     log::info!("Store has {} passwords", store.list()?.len());
 
@@ -473,12 +485,12 @@ fn main() -> Result<()> {
             }
             'S' | 's' => {
                 log::info!("Syncing!");
-                let (_, token_info) = get_account_and_token(get_default_fxa_config(), cred_file, &[SYNC_SCOPE])?;
+                let (_, token_info) = get_account_and_token(get_default_fxa_config(), &cred_file, &[SYNC_SCOPE])?;
                 let sync_key = URL_SAFE_NO_PAD.encode(
                     token_info.key.unwrap().key_bytes()?,
                 );
                 // TODO: allow users to use stage/etc.
-                let cli_fxa = get_cli_fxa(get_default_fxa_config(), cred_file, &[SYNC_SCOPE])?;
+                let cli_fxa = get_cli_fxa(get_default_fxa_config(), &cred_file, &[SYNC_SCOPE])?;
                 match do_sync(
                     Arc::clone(&store),
                     cli_fxa.client_init.key_id.clone(),
