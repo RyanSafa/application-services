@@ -23,8 +23,6 @@ use sync15::{
 
 // I'm completely punting on good error handling here.
 use anyhow::Result;
-
-#[derive(PartialEq)]
 enum ShowLoginFields {
     Basic,
     All,
@@ -209,55 +207,59 @@ fn show_sql(conn: &rusqlite::Connection, sql: &str) -> Result<()> {
     Ok(())
 }
 
-fn show_logins(store: &LoginStore, show_which_fields: ShowLoginFields) -> Result<Vec<String>> {
+fn show_logins(
+    store: &LoginStore,
+    show_which_fields: ShowLoginFields,
+    target_login: Option<&String>,
+) -> Result<Vec<String>> {
     let logins = store.list()?;
-
     let mut table = prettytable::Table::new();
-    let mut row = row![bc =>
-    "(idx)",
-    "Guid",
-    "Username",
-    "Password",
-    "Origin",
-    ];
-
-    if ShowLoginFields::All == show_which_fields {
-        let extra_fields = vec![
-            "Action Origin",
-            "HTTP Realm",
-            "User Field",
-            "Pass Field",
-            "Uses",
-            "Created At",
-            "Changed At",
-            "Last Used",
-        ];
-
-        for field in extra_fields {
-            let cell = Cell::new(field);
-            row.add_cell(cell.style_spec("bc"));
-        }
-    }
+    let row = match show_which_fields {
+        ShowLoginFields::Basic => row![bc =>
+        "(idx)",
+        "Username",
+        "Password",
+        "Origin",
+        ],
+        ShowLoginFields::All => row![bc =>
+        "(idx)",
+        "Guid",
+        "Username",
+        "Password",
+        "Origin",
+        "Action Origin",
+        "HTTP Realm",
+        "User Field",
+        "Pass Field",
+        "Uses",
+        "Created At",
+        "Changed At",
+        "Last Used",
+        ],
+    };
 
     table.add_row(row);
 
     let mut v = Vec::with_capacity(logins.len());
     let mut logins_copy = logins.clone();
     logins_copy.sort_by_key(|a| a.guid());
-    for login in logins.iter() {
+
+    for login in logins
+        .iter()
+        .filter(|&login| target_login.map_or(true, |id| id == &login.id))
+    {
         let row = match show_which_fields {
             ShowLoginFields::Basic => row![
             r->v.len(),
-            Fr->&login.guid(),
             &login.username,
-            &login.password,
+            "*".repeat(8).to_string(),
             &login.origin],
 
             ShowLoginFields::All => row![
             r->v.len(),
             Fr->&login.guid(),
             &login.username,
-            &login.password,
+            "*".repeat(8).to_string(),
             &login.origin,
 
             string_opt_or(&login.form_action_origin, ""),
@@ -284,7 +286,7 @@ fn show_logins(store: &LoginStore, show_which_fields: ShowLoginFields) -> Result
 }
 
 fn prompt_record_id(s: &LoginStore, action: &str) -> Result<Option<String>> {
-    let index_to_id = show_logins(s, ShowLoginFields::Basic)?;
+    let index_to_id = show_logins(s, ShowLoginFields::Basic, None)?;
     let input = if let Some(input) = prompt_usize(format!("Enter (idx) of record to {}", action)) {
         input
     } else {
@@ -381,6 +383,7 @@ fn main() -> Result<()> {
                 .short('d')
                 .long("database")
                 .default_value("./logins.db")
+                .default_value_if("profile_path", clap::builder::ArgPredicate::IsPresent, None)
                 .value_name("LOGINS_DATABASE")
                 .num_args(1)
                 .help("Path to the logins database (default: \"./logins.db\")"),
@@ -390,6 +393,7 @@ fn main() -> Result<()> {
                 .short('c')
                 .long("credentials")
                 .default_value("./credentials.json")
+                .default_value_if("profile_path", clap::builder::ArgPredicate::IsPresent, None)
                 .value_name("CREDENTIAL_JSON")
                 .num_args(1)
                 .help(
@@ -399,20 +403,24 @@ fn main() -> Result<()> {
         .get_matches();
 
     let profile_path = matches.get_one::<String>("profile_path").unwrap();
-    let cred_file;
-    let db_path;
-
-    if matches.value_source("profile_path").is_some() {
-        let base = std::path::Path::new(profile_path);
-        db_path = base.join("key4.db").display().to_string();
-        cred_file = base.join("credentials.json").display().to_string();
-    } else {
-        cred_file = matches
-            .get_one::<String>("credential_file")
-            .unwrap()
-            .clone();
-        db_path = matches.get_one::<String>("database_path").unwrap().clone();
-    }
+    let cred_file = matches
+        .get_one::<String>("credential_file")
+        .cloned()
+        .unwrap_or_else(|| {
+            std::path::Path::new(profile_path)
+                .join("credentials.json")
+                .display()
+                .to_string()
+        });
+    let db_path = matches
+        .get_one::<String>("database_path")
+        .cloned()
+        .unwrap_or_else(|| {
+            std::path::Path::new(profile_path)
+                .join("logins.db")
+                .display()
+                .to_string()
+        });
 
     log::debug!("credential file: {:?}", cred_file);
     log::debug!("db: {:?}", db_path);
@@ -424,12 +432,12 @@ fn main() -> Result<()> {
 
     log::info!("Store has {} passwords", store.list()?.len());
 
-    if let Err(e) = show_logins(&store, ShowLoginFields::Basic) {
+    if let Err(e) = show_logins(&store, ShowLoginFields::Basic, None) {
         log::warn!("Failed to show initial login data! {}", e);
     }
 
     loop {
-        match prompt_char("[A]dd, [D]elete, [U]pdate, [S]ync, [V]iew, View All [F]elds, [B]ase-domain search, [R]eset, [W]ipe, [T]ouch, E[x]ecute SQL Query, or [Q]uit").unwrap_or('?') {
+        match prompt_char("[A]dd, [D]elete, [U]pdate, [S]ync, [V]iew All, [E]xamine, [B]ase-domain search, [R]eset, [W]ipe, [T]ouch, E[x]ecute SQL Query, or [Q]uit").unwrap_or('?') {
             'A' | 'a' => {
                 log::info!("Adding new record");
                 let record = read_login();
@@ -508,13 +516,21 @@ fn main() -> Result<()> {
                 }
             }
             'V' | 'v' => {
-                if let Err(e) = show_logins(&store, ShowLoginFields::Basic) {
+                if let Err(e) = show_logins(&store, ShowLoginFields::Basic, None) {
                     log::warn!("Failed to dump passwords? This is probably bad! {}", e);
                 }
             }
-            'F' | 'f' => {
-                if let Err(e) = show_logins(&store, ShowLoginFields::All) {
-                    log::warn!("Failed to dump passwords? This is probably bad! {}", e);
+            'E' | 'e' => {
+                match prompt_record_id(&store, "examine") {
+                    Ok(Some(id)) => {
+                        if let Err(e) = show_logins(&store, ShowLoginFields::All, Some(&id)) {
+                            log::warn!("Failed to dump passwords? This is probably bad! {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to get record ID! {}", e);
+                    }
+                    _ => {}
                 }
             }
             'B' | 'b' => {
